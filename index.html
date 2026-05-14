@@ -1343,5 +1343,302 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('resetAllBtn')?.addEventListener('click', resetAll);
 });
 </script>
-</body>
+<!-- ========== УМНЫЙ ПОИСК (БЕЗ API) ========== -->
+<style>
+/* Стили для поиска */
+.search-container {
+    position: relative;
+    max-width: 100%;
+    margin: 0 0 20px 0;
+}
+@media (min-width: 768px) {
+    .search-container {
+        float: right;
+        margin: -50px 0 20px 0;
+        width: 300px;
+    }
+}
+.search-input {
+    width: 100%;
+    padding: 12px 20px;
+    font-size: 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 60px;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+    transition: 0.2s;
+}
+.search-input:focus {
+    outline: none;
+    border-color: #fdcb6e;
+    box-shadow: 0 0 0 3px rgba(253,203,110,0.2);
+}
+.search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+    max-height: 400px;
+    overflow-y: auto;
+    z-index: 1000;
+    display: none;
+    margin-top: 8px;
+}
+.search-results.active {
+    display: block;
+}
+.search-result-item {
+    padding: 12px 20px;
+    border-bottom: 1px solid #f1f2f6;
+    cursor: pointer;
+    transition: 0.1s;
+}
+.search-result-item:hover {
+    background: #f8f9fa;
+}
+.search-result-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #2d3436;
+}
+.search-result-desc {
+    font-size: 0.8rem;
+    color: #636e72;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.search-highlight {
+    background: #fdcb6e;
+    padding: 0 2px;
+    border-radius: 4px;
+}
+@media (max-width: 767px) {
+    .search-container {
+        margin-bottom: 20px;
+    }
+    .search-input {
+        padding: 10px 16px;
+        font-size: 0.9rem;
+    }
+}
+</style>
+
+<div class="search-container">
+    <input type="text" id="searchInput" class="search-input" placeholder="🔍 Поиск по рецептам, заготовкам, советам... (например, «кабачки», «заморозка», «бульон»)" autocomplete="off">
+    <div id="searchResults" class="search-results"></div>
+</div>
+<div style="clear:both"></div>
+
+<script>
+(function() {
+    // База данных для поиска (собирается из ваших данных)
+    let searchIndex = [];
+
+    // Функция очистки HTML-тегов
+    function stripHtml(html) {
+        if (!html) return '';
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        return tmp.textContent || tmp.innerText || '';
+    }
+
+    // Формирование индекса поиска
+    function buildSearchIndex() {
+        searchIndex = [];
+        
+        // 1. Индексация дней и приёмов пищи из mealData
+        if (typeof mealData !== 'undefined' && mealData.length) {
+            mealData.forEach(day => {
+                const dayNum = day.day;
+                const mealTypes = ['breakfast', 'lunch', 'dinner', 'snack1', 'snack2'];
+                mealTypes.forEach(type => {
+                    const meal = day[type];
+                    if (!meal) return;
+                    let text = '';
+                    if (meal.name) text += meal.name + ' ';
+                    if (meal.dasha_ingredients) text += stripHtml(meal.dasha_ingredients) + ' ';
+                    if (meal.max_ingredients) text += stripHtml(meal.max_ingredients) + ' ';
+                    if (meal.base_recipe) text += stripHtml(meal.base_recipe) + ' ';
+                    if (meal.notes_nutritionist) text += stripHtml(meal.notes_nutritionist) + ' ';
+                    if (meal.notes_chef) text += stripHtml(meal.notes_chef) + ' ';
+                    if (meal.dasha) text += stripHtml(meal.dasha) + ' ';
+                    if (meal.max) text += stripHtml(meal.max) + ' ';
+                    if (text.trim()) {
+                        searchIndex.push({
+                            title: `День ${dayNum}: ${meal.name || type}`,
+                            desc: text.substring(0, 150),
+                            fullText: text,
+                            type: 'meal',
+                            day: dayNum,
+                            mealType: type,
+                            weight: text.length
+                        });
+                    }
+                });
+            });
+        }
+        
+        // 2. Индексация заготовок (prepItems)
+        if (typeof prepItems !== 'undefined' && prepItems.length) {
+            prepItems.forEach(item => {
+                let text = item.title + ' ' + item.ingredients + ' ' + item.technology + ' ' + item.storage;
+                text = stripHtml(text);
+                if (text.trim()) {
+                    searchIndex.push({
+                        title: item.title,
+                        desc: text.substring(0, 150),
+                        fullText: text,
+                        type: 'prep',
+                        prepId: item.title,
+                        weight: text.length
+                    });
+                }
+            });
+        }
+        
+        // 3. Индексация разделов режима (scheduleHTML)
+        if (typeof scheduleHTML !== 'undefined') {
+            let text = stripHtml(scheduleHTML);
+            if (text.trim()) {
+                searchIndex.push({
+                    title: 'Режим дня и рекомендации',
+                    desc: text.substring(0, 200),
+                    fullText: text,
+                    type: 'schedule',
+                    weight: text.length
+                });
+            }
+        }
+        
+        // 4. Индексация списка покупок (shoppingHTML – если не закомментирован)
+        // Для статического списка – не добавляем, т.к. он закомментирован, вместо него калькулятор.
+        // Калькулятор индексировать не будем, т.к. он динамический.
+        
+        console.log(`Индекс поиска построен: ${searchIndex.length} записей`);
+    }
+    
+    // Подсветка совпадений
+    function highlightText(text, query) {
+        if (!query) return text;
+        const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        return text.replace(regex, '<span class="search-highlight">$1</span>');
+    }
+    
+    // Поиск и отображение результатов
+    function performSearch() {
+        const query = document.getElementById('searchInput').value.trim();
+        const resultsContainer = document.getElementById('searchResults');
+        
+        if (query.length < 2) {
+            resultsContainer.classList.remove('active');
+            return;
+        }
+        
+        const lowerQuery = query.toLowerCase();
+        const matched = [];
+        
+        searchIndex.forEach(item => {
+            const lowerText = item.fullText.toLowerCase();
+            if (lowerText.includes(lowerQuery)) {
+                // Считаем релевантность: количество вхождений + длина
+                let count = (lowerText.match(new RegExp(lowerQuery, 'g')) || []).length;
+                matched.push({ item, relevance: count * 10 + Math.min(item.fullText.length, 200) });
+            }
+        });
+        
+        // Сортировка по релевантности
+        matched.sort((a, b) => b.relevance - a.relevance);
+        
+        if (matched.length === 0) {
+            resultsContainer.innerHTML = '<div class="search-result-item">Ничего не найдено</div>';
+            resultsContainer.classList.add('active');
+            return;
+        }
+        
+        let html = '';
+        matched.slice(0, 15).forEach(m => {
+            const item = m.item;
+            let action = '';
+            if (item.type === 'meal') {
+                action = `Перейти к Дню ${item.day} (${item.mealType === 'breakfast' ? 'Завтрак' : item.mealType === 'lunch' ? 'Обед' : item.mealType === 'dinner' ? 'Ужин' : 'Перекус'})`;
+            } else if (item.type === 'prep') {
+                action = 'Перейти к заготовкам';
+            } else if (item.type === 'schedule') {
+                action = 'Перейти к режиму';
+            }
+            const titleHighlight = highlightText(item.title, query);
+            const descHighlight = highlightText(item.desc, query);
+            html += `<div class="search-result-item" data-type="${item.type}" data-day="${item.day || ''}" data-meal="${item.mealType || ''}" data-prep="${item.prepId || ''}">
+                        <div class="search-result-title">${titleHighlight}</div>
+                        <div class="search-result-desc">${descHighlight} …</div>
+                        <div style="font-size:0.7rem; color:#a29bfe; margin-top:4px;">🔍 ${action}</div>
+                    </div>`;
+        });
+        resultsContainer.innerHTML = html;
+        resultsContainer.classList.add('active');
+        
+        // Обработчики кликов по результатам
+        document.querySelectorAll('.search-result-item').forEach(el => {
+            el.addEventListener('click', (e) => {
+                const type = el.dataset.type;
+                const day = el.dataset.day;
+                const mealType = el.dataset.meal;
+                const prepId = el.dataset.prep;
+                
+                // Переключение вкладки
+                if (type === 'meal' && day) {
+                    window.switchTab('menu', { target: document.querySelector('.tab-btn[onclick*="menu"]') });
+                    setTimeout(() => {
+                        const dayCards = document.querySelectorAll('.day-card');
+                        if (dayCards[day-1]) {
+                            dayCards[day-1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            dayCards[day-1].click();
+                            // После открытия модалки можно дополнительно подсветить нужный приём пищи
+                        }
+                    }, 100);
+                } else if (type === 'prep') {
+                    window.switchTab('prep', { target: document.querySelector('.tab-btn[onclick*="prep"]') });
+                    setTimeout(() => {
+                        const prepHeaders = document.querySelectorAll('.prep-header');
+                        for (let header of prepHeaders) {
+                            if (header.innerText.includes(prepId) || prepId === '') {
+                                header.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                header.parentElement.classList.add('open');
+                                break;
+                            }
+                        }
+                    }, 100);
+                } else if (type === 'schedule') {
+                    window.switchTab('schedule', { target: document.querySelector('.tab-btn[onclick*="schedule"]') });
+                }
+                // Очистка поиска
+                document.getElementById('searchInput').value = '';
+                resultsContainer.classList.remove('active');
+            });
+        });
+    }
+    
+    // Инициализация: построить индекс после полной загрузки страницы и данных
+    document.addEventListener('DOMContentLoaded', function() {
+        // Небольшая задержка, чтобы mealData и prepItems успели загрузиться (в вашем коде они уже глобальные)
+        setTimeout(buildSearchIndex, 100);
+        
+        const input = document.getElementById('searchInput');
+        input.addEventListener('input', function() {
+            performSearch();
+        });
+        // Закрытие результатов при клике вне
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.search-container')) {
+                document.getElementById('searchResults').classList.remove('active');
+            }
+        });
+    });
+})();
+</script>
+	</body>
 </html>
